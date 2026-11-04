@@ -129,26 +129,37 @@ class FBP(Dataset):
         # pdb.set_trace()
 
     def fill_in(self, cls_num):
-        # class number less than k_shot + k_query
+        # Class has fewer than k_shot + k_query images. Split the UNIQUE image
+        # indices into disjoint support and query pools first (no replacement),
+        # then cycle within each pool to fill the requested counts, so no image is
+        # ever in both support and query. np.random.choice defaults to replacement,
+        # which previously leaked an image across the split (and, in the first
+        # branch, reused idx[-1] for the query that could also be in support).
         indexDtrain = np.zeros(self.k_shot, dtype=int)
         indexDtest = np.zeros(self.k_query, dtype=int)
 
-        if cls_num <= self.k_shot:  # class number less than shot number
-            idx = np.random.choice(cls_num, cls_num)
-            if cls_num == 1:
-                spt_idx = idx
-            else:
-                spt_idx = idx[:-1]
+        perm = np.random.permutation(cls_num)  # unique indices, no replacement
 
-            for i in range(self.k_shot):
-                indexDtrain[i] = spt_idx[i % len(spt_idx)]
-            indexDtest[:] = idx[-1]
-        else:  # class number much than shot number but less than query number
-            idx = np.random.choice(cls_num, cls_num)
-            indexDtrain = idx[:self.k_shot]
-            qry_idx = idx[self.k_shot:]
-            for i in range(self.k_query):
-                indexDtest[i] = qry_idx[i % len(qry_idx)]
+        if cls_num == 1:
+            # Only one image exists, so it must serve both sets; unavoidable.
+            indexDtrain[:] = perm[0]
+            indexDtest[:] = perm[0]
+            return indexDtrain, indexDtest
+
+        # Give the support up to k_shot unique images and leave at least one for
+        # the query; the two pools are disjoint slices of the same permutation.
+        n_support_unique = min(self.k_shot, cls_num - 1)
+        support_pool = perm[:n_support_unique]
+        query_pool = perm[n_support_unique:]
+
+        for i in range(self.k_shot):
+            indexDtrain[i] = support_pool[i % len(support_pool)]
+        for i in range(self.k_query):
+            indexDtest[i] = query_pool[i % len(query_pool)]
+
+        # No image may appear in both support and query (cls_num > 1).
+        assert set(indexDtrain.tolist()).isdisjoint(indexDtest.tolist()), \
+            "fill_in produced overlapping support/query (cls_num=%d)" % cls_num
 
         return indexDtrain, indexDtest
 
